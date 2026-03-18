@@ -1,0 +1,145 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set version env
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          echo "TAG=${TAG}" >> "$GITHUB_ENV"
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+
+      - name: Build release asset
+        run: |
+          set -euo pipefail
+
+          sed -i -E "s/^__version__ = \".*\"/__version__ = \"${VERSION}\"/" _version.py
+
+          mkdir -p dist/keyd_manager/assets
+          cp main.py _version.py install.sh keyd_manager dist/keyd_manager/
+          cp assets/keyd.config dist/keyd_manager/assets/
+          chmod 755 dist/keyd_manager/keyd_manager
+
+          tar -C dist -czf keyd_manager-linux-x64.tar.gz keyd_manager
+
+          ls -lah
+          test -f keyd_manager-linux-x64.tar.gz
+
+      - name: Create release and upload asset
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${TAG}" "${GITHUB_WORKSPACE}/keyd_manager-linux-x64.tar.gz" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${TAG}" \
+            --generate-notes
+
+*** Add File: /home/ryan/Apps/keyd_manager/test_install_contract.py
+import os
+import subprocess
+import tempfile
+from pathlib import Path
+import unittest
+
+
+INSTALLER = Path(__file__).resolve().parent / "install.sh"
+
+
+class InstallContractTests(unittest.TestCase):
+    def _write_executable(self, path: Path, body: str) -> None:
+        path.write_text(body, encoding="utf-8")
+        path.chmod(0o755)
+
+    def test_dash_v_without_argument_prints_latest_release(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bin_dir = tmp_path / "bin"
+            home_dir = tmp_path / "home"
+            bin_dir.mkdir()
+            home_dir.mkdir()
+
+            self._write_executable(
+                bin_dir / "curl",
+                "#!/usr/bin/bash\n"
+                "if [[ \"$*\" == *\"releases/latest\"* ]]; then\n"
+                "  printf 'https://github.com/ryangerardwilson/keyd_manager/releases/tag/v0.1.0\\n'\n"
+                "  exit 0\n"
+                "fi\n"
+                "echo unexpected curl call >&2\n"
+                "exit 1\n",
+            )
+
+            env = os.environ.copy()
+            env["PATH"] = f"{bin_dir}:{env['PATH']}"
+            env["HOME"] = str(home_dir)
+
+            result = subprocess.run(
+                ["/usr/bin/bash", str(INSTALLER), "-v"],
+                capture_output=True,
+                text=True,
+                env=env,
+                check=True,
+            )
+
+            self.assertEqual(result.stdout.strip(), "0.1.0")
+
+    def test_upgrade_same_version_uses_dash_v(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bin_dir = tmp_path / "bin"
+            home_dir = tmp_path / "home"
+            bin_dir.mkdir()
+            home_dir.mkdir()
+
+            self._write_executable(
+                bin_dir / "curl",
+                "#!/usr/bin/bash\n"
+                "if [[ \"$*\" == *\"releases/latest\"* ]]; then\n"
+                "  printf 'https://github.com/ryangerardwilson/keyd_manager/releases/tag/v0.1.0\\n'\n"
+                "  exit 0\n"
+                "fi\n"
+                "echo unexpected curl call >&2\n"
+                "exit 1\n",
+            )
+            self._write_executable(
+                bin_dir / "keyd_manager",
+                "#!/usr/bin/bash\n"
+                "if [[ \"$1\" == \"-v\" ]]; then\n"
+                "  printf '0.1.0\\n'\n"
+                "  exit 0\n"
+                "fi\n"
+                "echo unexpected invocation >&2\n"
+                "exit 1\n",
+            )
+
+            env = os.environ.copy()
+            env["PATH"] = f"{bin_dir}:{env['PATH']}"
+            env["HOME"] = str(home_dir)
+
+            result = subprocess.run(
+                ["/usr/bin/bash", str(INSTALLER), "-u"],
+                capture_output=True,
+                text=True,
+                env=env,
+                check=True,
+            )
+
+            self.assertIn("already installed", result.stdout)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
