@@ -53,6 +53,11 @@ class InstallContractTests(unittest.TestCase):
             home_dir = tmp_path / "home"
             bin_dir.mkdir()
             home_dir.mkdir()
+            bashrc = home_dir / ".bashrc"
+            bashrc.write_text(
+                f"export PATH={home_dir}/.keyd_manager/bin:$PATH\n",
+                encoding="utf-8",
+            )
 
             self._write_executable(
                 bin_dir / "curl",
@@ -88,6 +93,7 @@ class InstallContractTests(unittest.TestCase):
             )
 
             self.assertIn("already installed", result.stdout)
+            self.assertNotIn(".keyd_manager/bin", bashrc.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

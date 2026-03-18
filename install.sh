@@ -99,9 +99,44 @@ remove_legacy_install() {
   rm -rf "$LEGACY_APP_HOME"
 }
 
+cleanup_legacy_path_entries() {
+  local bash_line="export PATH=${LEGACY_APP_HOME}/bin:\$PATH"
+  local fish_line="fish_add_path ${LEGACY_APP_HOME}/bin"
+  local config_file
+  local tmp_file
+
+  for config_file in \
+    "$HOME/.bashrc" \
+    "$HOME/.bash_profile" \
+    "$HOME/.profile" \
+    "$HOME/.zshrc" \
+    "$HOME/.zshenv" \
+    "$HOME/.config/bash/.bashrc" \
+    "$HOME/.config/bash/.bash_profile" \
+    "$HOME/.config/zsh/.zshrc" \
+    "$HOME/.config/zsh/.zshenv" \
+    "$HOME/.config/fish/config.fish"
+  do
+    [[ -f "$config_file" ]] || continue
+    tmp_file="$(mktemp)"
+    awk -v bash_line="$bash_line" -v fish_line="$fish_line" '
+      $0 != bash_line && $0 != fish_line { print }
+    ' "$config_file" > "$tmp_file"
+    if ! cmp -s "$config_file" "$tmp_file"; then
+      mv "$tmp_file" "$config_file"
+      print_message info "${MUTED}Removed legacy PATH entry from ${NC}$config_file"
+    else
+      rm -f "$tmp_file"
+    fi
+  done
+}
+
 finalize_install() {
   write_primary_launcher
   remove_legacy_install
+  if [[ "$no_modify_path" != "true" ]]; then
+    cleanup_legacy_path_entries
+  fi
 }
 
 get_latest_version() {
