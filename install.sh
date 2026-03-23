@@ -123,6 +123,14 @@ get_latest_version() {
 }
 
 
+existing_public_launcher_is_managed() {
+  [[ -f "$PUBLIC_LAUNCHER" ]] || return 1
+  grep -Fq '# Managed by rgw_cli_contract local-bin launcher' "$PUBLIC_LAUNCHER" 2>/dev/null && return 0
+  grep -Fq "\"${INSTALL_DIR}/${APP}\" \"\$@\"" "$PUBLIC_LAUNCHER" 2>/dev/null && return 0
+  grep -Fq "exec \"${INSTALL_DIR}/${APP}\" \"\$@\"" "$PUBLIC_LAUNCHER" 2>/dev/null && return 0
+  return 1
+}
+
 write_public_launcher() {
   if [[ -e "$PUBLIC_LAUNCHER" && ! -L "$PUBLIC_LAUNCHER" && ! -f "$PUBLIC_LAUNCHER" ]]; then
     die "Refusing to overwrite non-file launcher: $PUBLIC_LAUNCHER"
@@ -134,7 +142,7 @@ write_public_launcher() {
     if [[ "$resolved" != "${INSTALL_DIR}/${APP}" ]]; then
       die "Refusing to overwrite existing symlink launcher: $PUBLIC_LAUNCHER"
     fi
-  elif [[ -f "$PUBLIC_LAUNCHER" ]] && ! grep -Fq '# Managed by rgw_cli_contract local-bin launcher' "$PUBLIC_LAUNCHER" 2>/dev/null; then
+  elif [[ -f "$PUBLIC_LAUNCHER" ]] && ! existing_public_launcher_is_managed; then
     die "Refusing to overwrite existing launcher: $PUBLIC_LAUNCHER"
   fi
 
