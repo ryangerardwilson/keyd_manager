@@ -85,6 +85,40 @@ class InstallContractTests(unittest.TestCase):
             self.assertIn("already installed", result.stdout)
             self.assertTrue((Path('$HOME/.local/bin'.replace("$HOME", str(home_dir))) / 'km').exists())
 
+    def test_upgrade_does_not_downgrade_when_latest_lags(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bin_dir = tmp_path / "bin"
+            home_dir = tmp_path / "home"
+            bin_dir.mkdir()
+            home_dir.mkdir()
+
+            self._write_executable(
+                bin_dir / "curl",
+                "#!/usr/bin/bash\n"
+                "if [[ \"$*\" == *\"releases/latest\"* ]]; then\n"
+                "  printf 'https://github.com/ryangerardwilson/km/releases/tag/v0.1.10\\n'\n"
+                "  exit 0\n"
+                "fi\n"
+                "echo unexpected curl call >&2\n"
+                "exit 1\n",
+            )
+            self._write_executable(
+                bin_dir / "km",
+                "#!/usr/bin/bash\n"
+                "if [[ \"$1\" == \"-v\" ]]; then\n"
+                "  printf '0.1.11\\n'\n"
+                "  exit 0\n"
+                "fi\n"
+                "echo unexpected invocation >&2\n"
+                "exit 1\n",
+            )
+
+            result = self._run_installer(home_dir, "-u", path_prefix=bin_dir)
+
+            self.assertIn("skipping downgrade", result.stdout)
+            self.assertTrue((Path('$HOME/.local/bin'.replace("$HOME", str(home_dir))) / 'km').exists())
+
     def test_local_binary_install_writes_managed_launchers(self):
         with tempfile.TemporaryDirectory() as tmp:
             home_dir = Path(tmp)

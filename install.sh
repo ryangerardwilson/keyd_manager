@@ -107,6 +107,13 @@ read_installed_version() {
   "$installed_cmd" -v 2>/dev/null || true
 }
 
+version_is_greater() {
+  local left="$1"
+  local right="$2"
+  [[ -n "$left" && -n "$right" ]] || return 1
+  [[ "$(printf '%s\n%s\n' "$left" "$right" | sort -V | tail -n 1)" == "$left" && "$left" != "$right" ]]
+}
+
 get_latest_version() {
   command -v curl >/dev/null 2>&1 || die "'curl' is required but not installed."
   if [[ -z "$latest_version_cache" ]]; then
@@ -188,6 +195,12 @@ if $upgrade; then
     finalize_install
     print_manual_shell_steps
     print_message info "${APP} version ${requested_version} already installed"
+    exit 0
+  fi
+  if version_is_greater "$installed_version" "$requested_version"; then
+    finalize_install
+    print_manual_shell_steps
+    print_message info "${APP} version ${installed_version} is newer than latest release ${requested_version}; skipping downgrade"
     exit 0
   fi
 fi
