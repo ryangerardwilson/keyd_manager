@@ -28,13 +28,6 @@ def run_app(*args: str, env: dict[str, str] | None = None) -> subprocess.Complet
     )
 
 
-def encode_modalias_keys(*codes: int) -> str:
-    if not codes:
-        return "input:b0003v0000p0000e0000-e0,1,4,ram4,lsfw"
-    key_tokens = ",".join(f"{code:X}" for code in codes)
-    return f"input:b0003v0000p0000e0000-e0,1,4,k{key_tokens},ram4,lsfw"
-
-
 class MainContractTests(unittest.TestCase):
     def test_no_args_matches_dash_h(self):
         no_args = run_app()
@@ -120,83 +113,13 @@ class MainContractTests(unittest.TestCase):
         self.assertEqual(
             [call.args[0] for call in run_root.call_args_list],
             [
-                ["install", "-Dm644", str(km_main.config_dir() / ".rendered-keyd.config"), str(km_main.SYSTEM_CONFIG)],
+                ["install", "-Dm644", str(source), str(km_main.SYSTEM_CONFIG)],
                 ["systemctl", "enable", "--now", "keyd.service"],
                 ["keyd", "reload"],
                 ["systemctl", "restart", "keyd.service"],
                 ["keyd", "reload"],
             ],
         )
-
-    def test_detect_copilot_key_name_prefers_assistant_then_f23(self):
-        with mock.patch(
-            "main._device_key_capabilities",
-            return_value=[
-                ("AT Translated Set 2 keyboard", {125, 193}),
-                ("Asus WMI hotkeys", {0x247}),
-            ],
-        ):
-            self.assertEqual(km_main.detect_copilot_key_name(), "assistant")
-
-        with mock.patch(
-            "main._device_key_capabilities",
-            return_value=[
-                ("Vendor Copilot Hotkeys", {193}),
-            ],
-        ):
-            self.assertEqual(km_main.detect_copilot_key_name(), "f23")
-
-        with mock.patch(
-            "main._device_key_capabilities",
-            return_value=[
-                ("AT Translated Set 2 keyboard", {125, 193}),
-            ],
-        ):
-            self.assertIsNone(km_main.detect_copilot_key_name())
-
-    def test_render_system_config_appends_detected_copilot_mapping(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            source = Path(temp_dir) / "keyd.config"
-            source.write_text("[main]\ncontrol = oneshot(control)\n", encoding="utf-8")
-
-            with mock.patch("main.detect_copilot_key_name", return_value="f23"):
-                rendered, warning = km_main.render_system_config(source)
-
-        self.assertIn("f23 = oneshot(control)", rendered)
-        self.assertIsNone(warning)
-
-    def test_detect_copilot_maps_f23_hotkey_devices(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            event_dir = Path(temp_dir) / "event11" / "device"
-            event_dir.mkdir(parents=True)
-            (event_dir / "name").write_text("Dell Copilot Hotkeys", encoding="utf-8")
-            (event_dir / "modalias").write_text(encode_modalias_keys(193), encoding="utf-8")
-
-            original_root = km_main.SYS_INPUT_ROOT
-            km_main.SYS_INPUT_ROOT = Path(temp_dir)
-            try:
-                self.assertEqual(km_main.detect_copilot_key_name(), "f23")
-            finally:
-                km_main.SYS_INPUT_ROOT = original_root
-
-    def test_render_system_config_warns_for_dell_privacy_key_path(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            event_dir = Path(temp_dir) / "event11" / "device"
-            event_dir.mkdir(parents=True)
-            (event_dir / "name").write_text("Dell WMI hotkeys", encoding="utf-8")
-            (event_dir / "modalias").write_text(encode_modalias_keys(0x252, 0x253), encoding="utf-8")
-
-            original_root = km_main.SYS_INPUT_ROOT
-            km_main.SYS_INPUT_ROOT = Path(temp_dir)
-            try:
-                rendered, warning = km_main.render_system_config(APP_ROOT / "assets" / "keyd.config")
-            finally:
-                km_main.SYS_INPUT_ROOT = original_root
-
-            self.assertEqual(rendered, (APP_ROOT / "assets" / "keyd.config").read_text(encoding="utf-8"))
-            self.assertIsNotNone(warning)
-            self.assertIn("Dell WMI hotkeys", warning)
-            self.assertIn("0x252", warning)
 
 
 if __name__ == "__main__":
