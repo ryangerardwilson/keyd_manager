@@ -160,9 +160,10 @@ class MainContractTests(unittest.TestCase):
             source.write_text("[main]\ncontrol = oneshot(control)\n", encoding="utf-8")
 
             with mock.patch("main.detect_copilot_key_name", return_value="f23"):
-                rendered = km_main.render_system_config(source)
+                rendered, warning = km_main.render_system_config(source)
 
         self.assertIn("f23 = oneshot(control)", rendered)
+        self.assertIsNone(warning)
 
     def test_detect_copilot_maps_f23_hotkey_devices(self):
         with tempfile.TemporaryDirectory() as temp_dir:
