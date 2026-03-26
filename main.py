@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from _version import __version__
@@ -14,6 +15,8 @@ LEGACY_APP_NAME = "keyd_manager"
 APP_ROOT = Path(__file__).resolve().parent
 ASSET_CONFIG = APP_ROOT / "assets" / "keyd.config"
 SYSTEM_CONFIG = Path("/etc/keyd/sticky_keys.conf")
+KEYD_SOCKET = Path("/var/run/keyd.socket")
+SYS_INPUT_ROOT = Path("/sys/class/input")
 INSTALL_SCRIPT = Path(
     os.environ.get("KM_INSTALL_SCRIPT")
     or os.environ.get("KEYD_MANAGER_INSTALL_SCRIPT")
@@ -122,6 +125,49 @@ def ensure_keyd_installed() -> int:
     return install.returncode
 
 
+def _device_key_capabilities() -> list[tuple[str, set[int]]]:
+    devices: list[tuple[str, set[int]]] = []
+    for event_dir in sorted(SYS_INPUT_ROOT.glob("event*/device")):
+        name_path = event_dir / "name"
+        caps_path = event_dir / "capabilities" / "key"
+        if not name_path.exists() or not caps_path.exists():
+            continue
+        name = name_path.read_text(encoding="utf-8", errors="ignore").strip()
+        words = caps_path.read_text(encoding="utf-8", errors="ignore").split()
+        supported: set[int] = set()
+        offset = 0
+        for word in words:
+            value = int(word, 16)
+            for bit_index in range(len(word) * 4):
+                if (value >> bit_index) & 1:
+                    supported.add(offset + bit_index)
+            offset += len(word) * 4
+        devices.append((name, supported))
+    return devices
+
+
+def detect_copilot_key_name() -> str | None:
+    for name, supported in _device_key_capabilities():
+        lowered = name.lower()
+        if "keyd virtual" in lowered:
+            continue
+        if 0x247 in supported and ("hotkeys" in lowered or "wmi" in lowered or "assistant" in lowered):
+            return "assistant"
+        if 193 in supported and ("hotkeys" in lowered or "wmi" in lowered or "copilot" in lowered):
+            return "f23"
+    return None
+
+
+def render_system_config(source: Path) -> str:
+    text = source.read_text(encoding="utf-8")
+    copilot_key = detect_copilot_key_name()
+    if not copilot_key:
+        return text
+    if f"\n{copilot_key} =" in f"\n{text}":
+        return text
+    return text.rstrip() + f"\n\n# Auto-detected laptop Copilot key\n{copilot_key} = oneshot(control)\n"
+
+
 def apply_config() -> int:
     source = ensure_config_file()
 
@@ -129,7 +175,11 @@ def apply_config() -> int:
     if rc != 0:
         return rc
 
-    install = run_root(["install", "-Dm644", str(source), str(SYSTEM_CONFIG)])
+    rendered = render_system_config(source)
+    tmp_path = config_dir() / ".rendered-keyd.config"
+    tmp_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path.write_text(rendered, encoding="utf-8")
+    install = run_root(["install", "-Dm644", str(tmp_path), str(SYSTEM_CONFIG)])
     if install.returncode != 0:
         return install.returncode
 
@@ -137,12 +187,48 @@ def apply_config() -> int:
     if enable.returncode != 0:
         return enable.returncode
 
+    for _ in range(10):
+        if KEYD_SOCKET.exists():
+            break
+        time.sleep(0.2)
+
     reload_cmd = ["keyd", "reload"]
-    reload_result = run_root(reload_cmd)
+    reload_result = run_root(reload_cmd, capture_output=True)
     if reload_result.returncode != 0:
-        restart = run_root(["systemctl", "restart", "keyd.service"])
+        combined_output = "\n".join(
+            part.strip()
+            for part in (reload_result.stdout, reload_result.stderr)
+            if part and part.strip()
+        )
+
+        restart = run_root(["systemctl", "restart", "keyd.service"], capture_output=True)
         if restart.returncode != 0:
+            if combined_output:
+                print(combined_output, file=sys.stderr)
+            restart_output = "\n".join(
+                part.strip()
+                for part in (restart.stdout, restart.stderr)
+                if part and part.strip()
+            )
+            if restart_output:
+                print(restart_output, file=sys.stderr)
             return restart.returncode
+
+        for _ in range(10):
+            if KEYD_SOCKET.exists():
+                break
+            time.sleep(0.2)
+
+        reload_result = run_root(reload_cmd, capture_output=True)
+        if reload_result.returncode != 0:
+            retry_output = "\n".join(
+                part.strip()
+                for part in (reload_result.stdout, reload_result.stderr)
+                if part and part.strip()
+            )
+            if retry_output:
+                print(retry_output, file=sys.stderr)
+            return reload_result.returncode
 
     print(f"Installed {source} -> {SYSTEM_CONFIG}")
     print("keyd config applied.")

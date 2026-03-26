@@ -3,11 +3,16 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from unittest import mock
 import unittest
 
 
 APP_ROOT = Path(__file__).resolve().parents[1]
 MAIN = APP_ROOT / "main.py"
+if str(APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(APP_ROOT))
+
+import main as km_main
 
 
 def run_app(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -78,6 +83,79 @@ class MainContractTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0)
             self.assertEqual(marker.read_text(encoding="utf-8").strip(), "-u")
+
+    def test_apply_retries_reload_after_socket_error(self):
+        completed = subprocess.CompletedProcess
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        source = Path(temp_dir.name) / "keyd.config"
+        source.write_text("[main]\ncontrol = oneshot(control)\n", encoding="utf-8")
+
+        with (
+            mock.patch("main.ensure_config_file", return_value=source),
+            mock.patch("main.ensure_keyd_installed", return_value=0),
+            mock.patch("pathlib.Path.exists", autospec=True, side_effect=lambda path: path == km_main.KEYD_SOCKET),
+            mock.patch("main.time.sleep"),
+            mock.patch(
+                "main.run_root",
+                side_effect=[
+                    completed(["install"], 0),
+                    completed(["systemctl", "enable", "--now", "keyd.service"], 0),
+                    completed(["keyd", "reload"], 1, "", "failed to connect to /var/run/keyd.socket"),
+                    completed(["systemctl", "restart", "keyd.service"], 0),
+                    completed(["keyd", "reload"], 0),
+                ],
+            ) as run_root,
+        ):
+            rc = km_main.apply_config()
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            [call.args[0] for call in run_root.call_args_list],
+            [
+                ["install", "-Dm644", str(km_main.config_dir() / ".rendered-keyd.config"), str(km_main.SYSTEM_CONFIG)],
+                ["systemctl", "enable", "--now", "keyd.service"],
+                ["keyd", "reload"],
+                ["systemctl", "restart", "keyd.service"],
+                ["keyd", "reload"],
+            ],
+        )
+
+    def test_detect_copilot_key_name_prefers_assistant_then_f23(self):
+        with mock.patch(
+            "main._device_key_capabilities",
+            return_value=[
+                ("AT Translated Set 2 keyboard", {125, 193}),
+                ("Asus WMI hotkeys", {0x247}),
+            ],
+        ):
+            self.assertEqual(km_main.detect_copilot_key_name(), "assistant")
+
+        with mock.patch(
+            "main._device_key_capabilities",
+            return_value=[
+                ("Vendor Copilot Hotkeys", {193}),
+            ],
+        ):
+            self.assertEqual(km_main.detect_copilot_key_name(), "f23")
+
+        with mock.patch(
+            "main._device_key_capabilities",
+            return_value=[
+                ("AT Translated Set 2 keyboard", {125, 193}),
+            ],
+        ):
+            self.assertIsNone(km_main.detect_copilot_key_name())
+
+    def test_render_system_config_appends_detected_copilot_mapping(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "keyd.config"
+            source.write_text("[main]\ncontrol = oneshot(control)\n", encoding="utf-8")
+
+            with mock.patch("main.detect_copilot_key_name", return_value="f23"):
+                rendered = km_main.render_system_config(source)
+
+        self.assertIn("f23 = oneshot(control)", rendered)
 
 
 if __name__ == "__main__":
